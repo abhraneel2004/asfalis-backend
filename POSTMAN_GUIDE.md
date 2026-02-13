@@ -146,6 +146,7 @@ if (jsonData.success && jsonData.data.access_token) {
 **1. List Contacts** — `GET {{baseUrl}}/contacts`
 
 **2. Add Contact** — `POST {{baseUrl}}/contacts`
+> Note: Providing an email triggers a notification to the contact with instructions to join the Twilio sandbox for WhatsApp alerts.
 ```json
 {
     "name": "Mom",
@@ -156,11 +157,13 @@ if (jsonData.success && jsonData.data.access_token) {
 }
 ```
 
+
 **3. Update Contact** — `PUT {{baseUrl}}/contacts/<contact_id>`
 ```json
 {
     "name": "Mother",
-    "phone": "+919876543211"
+    "phone": "+919876543211",
+    "email": "mother_new@example.com"
 }
 ```
 

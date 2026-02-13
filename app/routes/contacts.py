@@ -6,6 +6,8 @@ from app.extensions import db, limiter
 from app.schemas.contact_schema import ContactSchema
 from marshmallow import ValidationError
 from app.config import Config
+from app.services.email_service import send_contact_added_email
+from app.models.user import User
 
 contacts_bp = Blueprint('contacts', __name__)
 
@@ -47,7 +49,20 @@ def add_contact():
     )
     
     db.session.add(new_contact)
+    db.session.add(new_contact)
     db.session.commit()
+
+    # Send notification email if email is provided
+    if new_contact.email:
+        user = User.query.get(current_user_id)
+        if user:
+            send_contact_added_email(
+                to_email=new_contact.email,
+                contact_name=new_contact.name,
+                user_name=user.full_name,
+                twilio_number=Config.TWILIO_PHONE_NUMBER,
+                sandbox_code=Config.TWILIO_SANDBOX_CODE
+            )
 
     return jsonify(success=True, data=new_contact.to_dict()), 201
 

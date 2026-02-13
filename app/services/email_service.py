@@ -17,11 +17,122 @@ def send_otp_email(to_email, otp_code):
             logger.warning("MAIL_USERNAME not set. Email sending will fail.")
         
         msg = Message(subject, sender=sender, recipients=[to_email])
-        msg.body = f"Your Verification Code is: {otp_code}\n\nThis code is valid for 5 minutes.\nDo not share this code with anyone."
+        
+        html_body = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <style>
+                body {{ font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; background-color: #f4f4f4; margin: 0; padding: 0; }}
+                .container {{ max-width: 600px; margin: 20px auto; background-color: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }}
+                .header {{ background-color: #4CAF50; color: white; padding: 20px; text-align: center; }}
+                .content {{ padding: 30px; color: #333333; line-height: 1.6; text-align: center; }}
+                .otp-code {{ font-size: 32px; font-weight: bold; color: #4CAF50; letter-spacing: 5px; margin: 20px 0; background-color: #f0f8f0; padding: 10px; display: inline-block; border-radius: 4px; }}
+                .footer {{ background-color: #eeeeee; color: #777777; padding: 15px; text-align: center; font-size: 12px; }}
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <div class="header">
+                    <h1>Verification Code</h1>
+                </div>
+                <div class="content">
+                    <p>Hello,</p>
+                    <p>Use the following code to verify your email address for <strong>Asfalis</strong>.</p>
+                    
+                    <div class="otp-code">{otp_code}</div>
+                    
+                    <p>This code is valid for <strong>5 minutes</strong>.<br>Do not share this code with anyone.</p>
+                </div>
+                <div class="footer">
+                    <p>Asfalis - Your Safety, Our Priority.</p>
+                </div>
+            </div>
+        </body>
+        </html>
+        """
+        
+        msg.html = html_body
         
         mail.send(msg)
         logger.info(f"OTP sent to {to_email}")
         return True
     except Exception as e:
         logger.error(f"Failed to send OTP email to {to_email}: {str(e)}")
+        return False
+
+def send_contact_added_email(to_email, contact_name, user_name, twilio_number, sandbox_code):
+    """
+    Sends an email to a newly added trusted contact with instructions.
+    """
+    try:
+        subject = f"{user_name} added you as a Trusted Contact - Asfalis"
+        sender = current_app.config.get('MAIL_USERNAME')
+        if not sender:
+            logger.warning("MAIL_USERNAME not set. Email sending will fail.")
+            return False
+
+        # Whatsapp Link Logic
+        # twilio_number format expected: +14155238886 (or similar)
+        # sandbox_code format expected: "join something-something"
+        # whatsapp link: https://wa.me/14155238886?text=join%20something-something
+        
+        clean_number = twilio_number.replace('+', '').replace('-', '').replace(' ', '')
+        encoded_code = sandbox_code.replace(' ', '%20')
+        whatsapp_link = f"https://wa.me/{clean_number}?text={encoded_code}"
+
+        html_body = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <style>
+                body {{ font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; background-color: #f4f4f4; margin: 0; padding: 0; }}
+                .container {{ max-width: 600px; margin: 20px auto; background-color: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }}
+                .header {{ background-color: #4CAF50; color: white; padding: 20px; text-align: center; }}
+                .content {{ padding: 30px; color: #333333; line-height: 1.6; }}
+                .button {{ display: inline-block; padding: 12px 24px; background-color: #25D366; color: white; text-decoration: none; border-radius: 5px; font-weight: bold; margin-top: 20px; }}
+                .footer {{ background-color: #eeeeee; color: #777777; padding: 15px; text-align: center; font-size: 12px; }}
+                .code-box {{ background-color: #f9f9f9; border: 1px solid #ddd; padding: 10px; font-family: monospace; font-size: 16px; margin: 10px 0; display: inline-block; }}
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <div class="header">
+                    <h1>You're a Trusted Contact 🛡️</h1>
+                </div>
+                <div class="content">
+                    <p>Hello <strong>{contact_name}</strong>,</p>
+                    <p><strong>{user_name}</strong> has added you as a trusted contact in <strong>Asfalis</strong>, their personal safety app.</p>
+                    <p>This means you will receive immediate alerts with their location if they trigger an SOS.</p>
+                    
+                    <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;">
+
+                    <h3>⚠️ Important Next Step</h3>
+                    <p>To ensure you receive these emergency alerts on WhatsApp, you <strong>must</strong> join our sandbox environment.</p>
+                    
+                    <p>1. Save this number: <strong>{twilio_number}</strong></p>
+                    <p>2. Send the following code to that number on WhatsApp:</p>
+                    <div class="code-box">{sandbox_code}</div>
+
+                    <p>Or simply click the button below:</p>
+                    <div style="text-align: center;">
+                        <a href="{whatsapp_link}" class="button">Join on WhatsApp</a>
+                    </div>
+                </div>
+                <div class="footer">
+                    <p>Asfalis - Your Safety, Our Priority.</p>
+                </div>
+            </div>
+        </body>
+        </html>
+        """
+
+        msg = Message(subject, sender=sender, recipients=[to_email])
+        msg.html = html_body
+        
+        mail.send(msg)
+        logger.info(f"Contact notification email sent to {to_email}")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to send contact notification email to {to_email}: {str(e)}")
         return False
