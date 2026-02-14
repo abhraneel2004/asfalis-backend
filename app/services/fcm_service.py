@@ -4,18 +4,26 @@ from firebase_admin import credentials, messaging
 from app.config import Config
 from celery import shared_task
 import os
+import json
 
 # Initialize Firebase App
 cred_path = Config.FIREBASE_CREDENTIALS_PATH
-if cred_path and os.path.exists(cred_path):
-    cred = credentials.Certificate(cred_path)
-    try:
+cred_json = Config.FIREBASE_CREDENTIALS_JSON
+
+try:
+    if cred_path and os.path.exists(cred_path):
+        cred = credentials.Certificate(cred_path)
         firebase_admin.initialize_app(cred)
-    except ValueError:
-        # App already initialized
-        pass
-else:
-    print("Warning: Firebase credentials not found. Push notifications will not work.")
+    elif cred_json:
+        cred = credentials.Certificate(json.loads(cred_json))
+        firebase_admin.initialize_app(cred)
+    else:
+        print("Warning: Firebase credentials not found (PATH or JSON). Push notifications will not work.")
+except ValueError:
+    # App already initialized
+    pass
+except Exception as e:
+    print(f"Error initializing Firebase: {e}")
 
 @shared_task(ignore_result=True)
 def send_push_task(fcm_token, title, body, data):
