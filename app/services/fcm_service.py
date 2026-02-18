@@ -2,9 +2,12 @@
 import firebase_admin
 from firebase_admin import credentials, messaging
 from app.config import Config
-from celery import shared_task
 import os
 import json
+import logging
+import threading
+
+logger = logging.getLogger(__name__)
 
 # Initialize Firebase App
 cred_path = Config.FIREBASE_CREDENTIALS_PATH
@@ -18,58 +21,53 @@ try:
         cred = credentials.Certificate(json.loads(cred_json))
         firebase_admin.initialize_app(cred)
     else:
-        print("Warning: Firebase credentials not found (PATH or JSON). Push notifications will not work.")
+        logger.warning("Firebase credentials not found (PATH or JSON). Push notifications will not work.")
 except ValueError:
     # App already initialized
     pass
 except Exception as e:
-    print(f"Error initializing Firebase: {e}")
+    logger.error(f"Error initializing Firebase: {e}")
 
-@shared_task(ignore_result=True)
-def send_push_task(fcm_token, title, body, data):
-    """
-    Background task to send FCM push notification.
-    """
-    try:
-        message = messaging.Message(
-            notification=messaging.Notification(
-                title=title,
-                body=body,
-            ),
-            data=data or {},
-            token=fcm_token,
-            android=messaging.AndroidConfig(
-                priority='high',
-                notification=messaging.AndroidNotification(
-                     channel_id='sos_channel',
-                     priority='max',
-                     sound='alarm'
-                )
-            )
-        )
-        response = messaging.send(message)
-        print(f"Successfully sent message: {response}")
-    except Exception as e:
-        print(f"Error sending message: {e}")
+
+def _is_firebase_ready():
+    """Check if Firebase is initialized."""
+    return bool(firebase_admin._apps)
+
 
 def send_push_notification(fcm_token, title, body, data=None):
     """
-    Queue a push notification via FCM.
+    Send a push notification via FCM in a background thread.
+    No Celery/Redis required.
     """
     if not fcm_token:
-        print("Error: No FCM token provided")
+        logger.error("No FCM token provided")
         return None
 
-    # Check if firebase is initialized (naive check via cred_path existence)
-    # Ideally should check firebase_admin._apps
-    if not (Config.FIREBASE_CREDENTIALS_PATH and os.path.exists(Config.FIREBASE_CREDENTIALS_PATH)):
-         print("Warning: Firebase not configured, skipping push.")
-         return None
-
-    try:
-        send_push_task.delay(fcm_token, title, body, data)
-        print(f"Push notification task queued for {fcm_token}")
-        return "queued"
-    except Exception as e:
-        print(f"Error queuing message: {e}")
+    if not _is_firebase_ready():
+        logger.warning("Firebase not configured, skipping push notification.")
         return None
+
+    def _send():
+        try:
+            message = messaging.Message(
+                notification=messaging.Notification(title=title, body=body),
+                data=data or {},
+                token=fcm_token,
+                android=messaging.AndroidConfig(
+                    priority='high',
+                    notification=messaging.AndroidNotification(
+                        channel_id='sos_channel',
+                        priority='max',
+                        sound='alarm'
+                    )
+                )
+            )
+            response = messaging.send(message)
+            logger.info(f"Push notification sent: {response}")
+        except Exception as e:
+            logger.error(f"Error sending push notification: {e}")
+
+    t = threading.Thread(target=_send, daemon=True)
+    t.start()
+    logger.info(f"Push notification dispatch started for token: {fcm_token[:20]}...")
+    return "dispatched"
