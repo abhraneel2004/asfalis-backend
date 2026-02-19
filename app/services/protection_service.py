@@ -13,16 +13,36 @@ from app.services.sos_service import trigger_sos
 _MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'model.pkl')
 _model = None
 
-
 def _get_model():
-    """Lazy-load the ML model so it works inside the Flask app context."""
+    """Lazy-load the ML model from the Database (or fallback to file)."""
     global _model
     if _model is None:
         try:
-            _model = joblib.load(_MODEL_PATH)
-            print(f"✅ Danger-detection model loaded from {_MODEL_PATH}")
+            # Try loading from DB first
+            from app.models.ml_model import MLModel
+            from app.extensions import db
+            import io
+            
+            # Need app context if running outside request (e.g. tests)
+            # But usually this is called within a request or celery task
+            active_model = MLModel.query.filter_by(is_active=True).order_by(MLModel.created_at.desc()).first()
+            
+            if active_model:
+                with io.BytesIO(active_model.data) as f:
+                    _model = joblib.load(f)
+                print(f"✅ Loaded ML model {active_model.version} from DB")
+                return _model
+            
+            # Fallback to file if no DB model
+            if os.path.exists(_MODEL_PATH):
+                _model = joblib.load(_MODEL_PATH)
+                print(f"⚠️ Loaded fallback model from {_MODEL_PATH}")
+            else:
+                print("❌ No active model found in DB or file.")
+                
         except Exception as e:
             print(f"❌ Failed to load model: {e}")
+            
     return _model
 
 
@@ -53,28 +73,46 @@ def _mark_sos_triggered(user_id):
 # ---------------------------------------------------------------------------
 # Feature extraction (mirrors data_train.py exactly)
 # ---------------------------------------------------------------------------
-def extract_features(window):
-    """Extract 15 statistical features from a sensor window.
+# ---------------------------------------------------------------------------
+# Feature extraction (mirrors data_train.py exactly)
+# ---------------------------------------------------------------------------
+def extract_features(window, sensor_type):
+    """Extract 17 statistical features from a sensor window.
+    
+    Features:
+    - 15 statistical features from (x, y, z)
+    - 2 One-Hot encoded features for sensor_type: [is_accel, is_gyro]
 
     Args:
         window: np.ndarray of shape (N, 3) — N readings of [x, y, z].
+        sensor_type: str ('accelerometer' or 'gyroscope')
 
     Returns:
-        np.ndarray of shape (1, 15) ready for model.predict().
+        np.ndarray of shape (1, 17) ready for model.predict().
     """
     window = np.array(window, dtype=float)
     feats = []
     for i in range(3):
         axis = window[:, i]
         feats += [axis.mean(), axis.std(), axis.max(), axis.min(), np.sum(axis ** 2)]
+    
+    # One-Hot Encoding for Sensor Type
+    if sensor_type == 'accelerometer':
+        feats += [1, 0]
+    elif sensor_type == 'gyroscope':
+        feats += [0, 1]
+    else:
+        feats += [0, 0] # Unknown
+        
     return np.array(feats).reshape(1, -1)
 
 
-def predict_danger(window_data):
+def predict_danger(window_data, sensor_type='accelerometer'):
     """Run the ML model on a sensor window.
 
     Args:
         window_data: list of [x, y, z] lists.
+        sensor_type: str ('accelerometer' or 'gyroscope')
 
     Returns:
         (prediction, confidence) — prediction is 0 (safe) or 1 (danger).
@@ -83,14 +121,22 @@ def predict_danger(window_data):
     if model is None:
         return 0, 0.0
 
-    features = extract_features(window_data)
-    prediction = int(model.predict(features)[0])
-
+    features = extract_features(window_data, sensor_type)
+    
     # Get probability if the model supports it
     confidence = 0.0
+    prediction = 0
+    
     if hasattr(model, 'predict_proba'):
         proba = model.predict_proba(features)[0]
-        confidence = float(proba[prediction])
+        # proba is [prob_safe, prob_danger]
+        confidence = float(proba[1]) # Probability of Danger
+        # We don't use model.predict() here, we use threshold logic in analyze_sensor_data
+        # But for backward compatibility, let's say:
+        prediction = 1 if confidence > 0.5 else 0
+    else:
+        prediction = int(model.predict(features)[0])
+        confidence = 1.0 if prediction == 1 else 0.0
 
     return prediction, confidence
 
@@ -124,9 +170,9 @@ def get_protection_status(user_id):
 def analyze_sensor_data(user_id, sensor_type, readings, sensitivity):
     """Analyze incoming sensor readings using the ML model.
 
-    This replaces the old threshold-based mock logic. The readings list
-    of {x, y, z, timestamp} dicts is converted into a window and fed to
-    the RandomForest model.
+    This uses probability thresholds based on sensitivity.
+    High Sensitivity -> Trigger on lower confidence (e.g., > 30%)
+    Low Sensitivity -> Trigger only on high confidence (e.g., > 80%)
     """
     if not active_protection_users.get(user_id):
         return {"alert_triggered": False, "confidence": 0.0}
@@ -134,14 +180,40 @@ def analyze_sensor_data(user_id, sensor_type, readings, sensitivity):
     # Convert [{x, y, z, timestamp}, ...] into [[x, y, z], ...]
     window_data = [[r['x'], r['y'], r['z']] for r in readings]
 
-    prediction, confidence = predict_danger(window_data)
+    # Predict
+    # strict_prediction is just based on 0.5 cutoff, but we use confidence for sensitivity
+    strict_prediction, confidence_danger = predict_danger(window_data, sensor_type)
 
-    if prediction == 1:
+    # Sensitivity Thresholds
+    # Lower threshold = Easier to trigger (Higher sensitivity)
+    thresholds = {
+        "high": 0.35,   # Trigger if > 35% chance of danger
+        "medium": 0.60, # Trigger if > 60% chance
+        "low": 0.85     # Trigger if > 85% chance
+    }
+    
+    threshold = thresholds.get(sensitivity.lower(), 0.60)
+    is_danger = confidence_danger >= threshold
+
+    # -------------------------------------------------------
+    # AUTO-LABELING (Save data for retraining)
+    # -------------------------------------------------------
+    # We allow the model to learn from its own decisions (Self-Training Loop)
+    # Ideally, user would verify this (True Positive/False Positive).
+    # ensure we don't block the thread
+    try:
+        # Determine label: 1 if we think it's danger, 0 otherwise
+        predicted_label = 1 if is_danger else 0
+        save_training_data(user_id, sensor_type, readings, label=predicted_label, is_verified=False)
+    except Exception as e:
+        print(f"⚠️ Failed to auto-save training data: {e}")
+
+    if is_danger:
         # Check cooldown before triggering SOS
         if _is_on_cooldown(user_id):
             return {
                 "alert_triggered": False,
-                "confidence": confidence,
+                "confidence": confidence_danger,
                 "message": "SOS on cooldown, please wait before triggering again."
             }
 
@@ -160,7 +232,7 @@ def analyze_sensor_data(user_id, sensor_type, readings, sensitivity):
             from app.models.trusted_contact import TrustedContact
             contacts = TrustedContact.query.filter_by(user_id=user_id).all()
             maps_link = f"https://maps.google.com/?q={lat},{lng}"
-            whatsapp_msg = f"⚠ SOS ALERT!\nDanger detected via {sensor_type}!\n📍 Location: {maps_link}"
+            whatsapp_msg = f"⚠ SOS ALERT!\nDanger detected via {sensor_type}!\nConfidence: {int(confidence_danger*100)}%\n📍 Location: {maps_link}"
             for contact in contacts:
                 send_whatsapp_alert(contact.phone, whatsapp_msg)
         except Exception as e:
@@ -169,10 +241,10 @@ def analyze_sensor_data(user_id, sensor_type, readings, sensitivity):
         return {
             "alert_triggered": True,
             "alert_id": alert.id if alert else None,
-            "confidence": confidence
+            "confidence": confidence_danger
         }
 
-    return {"alert_triggered": False, "confidence": confidence}
+    return {"alert_triggered": False, "confidence": confidence_danger}
 
 
 def predict_from_window(user_id, window_data, location="Unknown"):

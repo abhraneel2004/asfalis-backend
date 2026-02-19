@@ -8,3 +8,4 @@ from app.models.settings import UserSettings
 from app.models.otp import OTPRecord
 from app.models.support import SupportTicket
 from app.models.sensor_data import SensorTrainingData
+from app.models.ml_model import MLModel

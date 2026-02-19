@@ -35,24 +35,73 @@ def train():
     print(f"✅ Loaded {len(df)} records.")
     
     # Prepare features
-    # We need to group by window (e.g. by timestamp proximity or if we stored window_id)
-    # For simplicity in this v1, let's assume the input is already features or we group by sliding window
-    # BUT, our `extract_features` takes a window of [x,y,z].
-    # Current DB stores raw readings. We need to group them into windows.
-    # Simple strategy: Group by User + Timestamp (rounded to seconds) or assume contiguous blocks.
-    # BETTER STRATEGY FOR RL: The app sends *windows*, so we should probably store *features* directly?
-    # No, user asked to store "accelerometer & gyroscope values".
+    # We need to reconstruct windows from the raw data stream.
+    # storage format: one row per reading.
+    # Logic: Group by user_id + sensor_type, sort by timestamp, then chunk into windows of size N=40.
     
-    # Reconstructing windows from raw stream is hard without a session/window ID.
-    # LIMITATION: This script assumes 'timestamp' allows grouping or we just train on raw values (bad).
-    # FIX: Let's assume for now we group by 40-sample chunks if possible, or just print a warning.
+    FEATURE_WINDOW_SIZE = 40
+    X_features = []
+    y_labels = []
     
-    print("⚠️  Warning: Raw data processing to windows is complex. Using simplified feature extraction (row-by-row) or placeholder.")
-    # Real implementation would require a 'window_id' in the schema.
-    # For now, let's create a dummy retrain to show the pipeline works.
+    # Group by user and sensor type
+    grouped = df.groupby(['user_id', 'sensor_type'])
     
-    X = df[['x', 'y', 'z']] # Simplified
-    y = df['label']
+    for (uid, stype), group in grouped:
+        # Sort by timestamp
+        group = group.sort_values('timestamp')
+        
+        # Create windows
+        # Use numpy for efficiency
+        raw_x = group['x'].values
+        raw_y = group['y'].values
+        raw_z = group['z'].values
+        labels = group['label'].values # Should be consistent within a window ideally
+        
+        num_readings = len(group)
+        # We need at least one window
+        if num_readings < FEATURE_WINDOW_SIZE:
+            continue
+            
+        # Slide or Chunk? Let's Chunk for simplicity
+        num_windows = num_readings // FEATURE_WINDOW_SIZE
+        
+        for i in range(num_windows):
+            start = i * FEATURE_WINDOW_SIZE
+            end = start + FEATURE_WINDOW_SIZE
+            
+            # Extract statistical features (Mean, Std, Max, Min, SumSq) for X, Y, Z
+            # Total 15 features
+            w_x = raw_x[start:end]
+            w_y = raw_y[start:end]
+            w_z = raw_z[start:end]
+            
+            # Label: use the majority vote or the first label of the window
+            # Since we auto-label the whole batch, they are likely same.
+            w_label = labels[start] 
+            
+            feats = []
+            for axis in [w_x, w_y, w_z]:
+                feats += [axis.mean(), axis.std(), axis.max(), axis.min(), np.sum(axis ** 2)]
+            
+            # 2. Add Sensor Type One-Hot Encoding
+            if stype == 'accelerometer':
+                feats += [1, 0]
+            elif stype == 'gyroscope':
+                feats += [0, 1]
+            else:
+                feats += [0, 0]
+                
+            X_features.append(feats)
+            y_labels.append(w_label)
+            
+    if not X_features:
+        print("⚠️  Not enough data to form complete windows (need 40 readings). Aborting.")
+        return
+
+    X = np.array(X_features)
+    y = np.array(y_labels)
+    
+    print(f"✅ Created {len(X)} training windows (Features: {X.shape[1]}).")
     
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
     
@@ -63,10 +112,34 @@ def train():
     print(f"🎯 Accuracy: {accuracy_score(y_test, preds)}")
     print(classification_report(y_test, preds))
     
-    # Save model
-    model_path = os.path.join('model.pkl')
-    joblib.dump(model, model_path)
-    print(f"💾 Model saved to {model_path}")
+    # Serialize model
+    import io
+    model_bytes = io.BytesIO()
+    joblib.dump(model, model_bytes)
+    model_data = model_bytes.getvalue()
+    
+    # Save to DB
+    from app import create_app
+    from app.models.ml_model import MLModel
+    from app.extensions import db
+    from datetime import datetime
+
+    app = create_app()
+    with app.app_context():
+        # Deactivate old models
+        db.session.query(MLModel).update({MLModel.is_active: False})
+        
+        # Save new model
+        version = f"v{datetime.now().strftime('%Y%m%d%H%M')}"
+        new_model = MLModel(
+            version=version,
+            is_active=True,
+            data=model_data,
+            accuracy=float(accuracy_score(y_test, preds))
+        )
+        db.session.add(new_model)
+        db.session.commit()
+        print(f"💾 Model {version} saved to database with accuracy {new_model.accuracy}")
 
 if __name__ == "__main__":
     train()
