@@ -72,3 +72,30 @@ def predict():
     )
 
     return jsonify(success=True, data=result), 200
+
+@protection_bp.route('/collect', methods=['POST'])
+@jwt_required()
+def collect_data():
+    """Endpoint to ingest labeled sensor data for training."""
+    current_user_id = get_jwt_identity()
+    from app.schemas.protection_schema import SensorTrainingSchema
+    from app.services.protection_service import save_training_data
+
+    schema = SensorTrainingSchema()
+    try:
+        data = schema.load(request.json)
+    except ValidationError as err:
+        return jsonify(success=False, error={"code": "VALIDATION_ERROR", "message": "Invalid request", "details": err.messages}), 400
+
+    success, msg = save_training_data(
+        current_user_id,
+        data['sensor_type'],
+        data['data'],
+        data['label'],
+        is_verified=True # Direct collection implies user knows the label
+    )
+
+    if success:
+        return jsonify(success=True, message=msg), 201
+    else:
+        return jsonify(success=False, error={"code": "DB_ERROR", "message": msg}), 500

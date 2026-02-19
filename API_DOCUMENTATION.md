@@ -228,6 +228,48 @@ Base URL: `http://localhost:5000/api`
 - **Endpoint**: `/protection/status`
 - **Method**: `GET`
 
+### Send Sensor Data (Analysis)
+- **Endpoint**: `/protection/sensor-data`
+- **Method**: `POST`
+- **Body**:
+  ```json
+  {
+    "sensor_type": "accelerometer",
+    "data": [
+      {"x": 0.1, "y": 0.2, "z": 9.8, "timestamp": 1234567890}
+    ],
+    "sensitivity": "medium"
+  }
+  ```
+- **Response**: Returns analysis result (danger detected or not).
+
+### Predict Danger (Raw Window)
+- **Endpoint**: `/protection/predict`
+- **Method**: `POST`
+- **Body**:
+  ```json
+  {
+    "window": [[0.1, 0.2, 9.8], [0.1, 0.2, 9.8], ... # 40 readings],
+    "location": "123 Main St"
+  }
+  ```
+- **Response**: Returns prediction (0 or 1) and confidence.
+
+### Collect Training Data
+- **Endpoint**: `/protection/collect`
+- **Method**: `POST`
+- **Body**:
+  ```json
+  {
+    "sensor_type": "accelerometer",
+    "data": [
+      {"x": 0.1, "y": 0.2, "z": 9.8, "timestamp": 1234567890}
+    ],
+    "label": 0  // 0 = Safe, 1 = Danger
+  }
+  ```
+- **Response**: Returns success message.
+
 ---
 
 ## Settings

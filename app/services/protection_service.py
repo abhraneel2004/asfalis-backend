@@ -109,9 +109,15 @@ def toggle_protection(user_id, is_active):
 
 def get_protection_status(user_id):
     is_active = active_protection_users.get(user_id, False)
+    
+    # Check for connected bracelet
+    from app.models.device import ConnectedDevice
+    device = ConnectedDevice.query.filter_by(user_id=user_id, is_connected=True).first()
+    bracelet_connected = (device is not None)
+
     return {
         "is_active": is_active,
-        "bracelet_connected": False  # Mock
+        "bracelet_connected": bracelet_connected
     }
 
 
@@ -216,3 +222,43 @@ def predict_from_window(user_id, window_data, location="Unknown"):
         response["alert_id"] = alert.id if alert else None
 
     return response
+
+
+# ---------------------------------------------------------------------------
+# Data Collection / RL
+# ---------------------------------------------------------------------------
+def save_training_data(user_id, sensor_type, readings, label, is_verified=False):
+    """Save raw sensor data for future model training.
+    
+    Args:
+        user_id: User ID
+        sensor_type: 'accelerometer' or 'gyroscope'
+        readings: List of {x, y, z, timestamp}
+        label: 0 (Safe) or 1 (Danger)
+        is_verified: boolean, true if manually corrected by user
+    """
+    from app.models.sensor_data import SensorTrainingData
+    from app.extensions import db
+    
+    try:
+        new_records = []
+        for r in readings:
+            record = SensorTrainingData(
+                user_id=user_id,
+                sensor_type=sensor_type,
+                timestamp=r['timestamp'],
+                x=r['x'],
+                y=r['y'],
+                z=r['z'],
+                label=label,
+                is_verified=is_verified
+            )
+            new_records.append(record)
+        
+        db.session.add_all(new_records)
+        db.session.commit()
+        return True, f"Saved {len(new_records)} training records."
+    except Exception as e:
+        db.session.rollback()
+        current_app.logger.error(f"Failed to save training data: {e}")
+        return False, str(e)
